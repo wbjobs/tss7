@@ -11,23 +11,28 @@ const (
 )
 
 type SimulationResult struct {
-	ID               int64       `json:"id,omitempty"`
-	WoodType         string      `json:"wood_type"`
-	JointType        string      `json:"joint_type"`
-	MaxLoadKg        float64     `json:"max_load_kg"`
-	FailureMode      FailureMode `json:"failure_mode"`
-	SafetyFactor     float64     `json:"safety_factor"`
-	TensileStressMax float64     `json:"tensile_stress_max_pa"`
-	TorsionStressMax float64     `json:"torsion_stress_max_pa"`
-	Nodes            int         `json:"nodes"`
-	MatrixSize       int         `json:"matrix_size"`
-	IsEstimated      bool        `json:"is_estimated"`
-	CalculatedAt     time.Time   `json:"calculated_at"`
+	ID                 int64       `json:"id,omitempty"`
+	WoodType           string      `json:"wood_type"`
+	JointType          string      `json:"joint_type"`
+	HumidityRH         float64     `json:"humidity_rh"`
+	MaxLoadKg          float64     `json:"max_load_kg"`
+	FailureMode        FailureMode `json:"failure_mode"`
+	SafetyFactor       float64     `json:"safety_factor"`
+	TensileStressMax   float64     `json:"tensile_stress_max_pa"`
+	TorsionStressMax   float64     `json:"torsion_stress_max_pa"`
+	SwellingRatio      float64     `json:"swelling_ratio"`
+	InterferenceMM     float64     `json:"interference_mm"`
+	RecommendedWaxLevel WaxLevel  `json:"recommended_wax_level"`
+	Nodes              int         `json:"nodes"`
+	MatrixSize         int         `json:"matrix_size"`
+	IsEstimated        bool        `json:"is_estimated"`
+	CalculatedAt       time.Time   `json:"calculated_at"`
 }
 
 type SimulationRequest struct {
-	WoodType  string `json:"wood_type"`
-	JointType string `json:"joint_type"`
+	WoodType   string  `json:"wood_type"`
+	JointType  string  `json:"joint_type"`
+	HumidityRH float64 `json:"humidity_rh"`
 }
 
 type APIResponse struct {
@@ -38,16 +43,20 @@ type APIResponse struct {
 }
 
 type HistoryRecord struct {
-	ID               int64       `json:"id"`
-	WoodType         string      `json:"wood_type"`
-	JointType        string      `json:"joint_type"`
-	MaxLoadKg        float64     `json:"max_load_kg"`
-	FailureMode      FailureMode `json:"failure_mode"`
-	SafetyFactor     float64     `json:"safety_factor"`
-	TensileStressMax float64     `json:"tensile_stress_max_pa"`
-	TorsionStressMax float64     `json:"torsion_stress_max_pa"`
-	Nodes            int         `json:"nodes"`
-	MatrixSize       int         `json:"matrix_size"`
-	IsEstimated      bool        `json:"is_estimated"`
-	CalculatedAt     time.Time   `json:"calculated_at"`
+	ID                 int64       `json:"id"`
+	WoodType           string      `json:"wood_type"`
+	JointType          string      `json:"joint_type"`
+	HumidityRH         float64     `json:"humidity_rh"`
+	MaxLoadKg          float64     `json:"max_load_kg"`
+	FailureMode        FailureMode `json:"failure_mode"`
+	SafetyFactor       float64     `json:"safety_factor"`
+	TensileStressMax   float64     `json:"tensile_stress_max_pa"`
+	TorsionStressMax   float64     `json:"torsion_stress_max_pa"`
+	SwellingRatio      float64     `json:"swelling_ratio"`
+	InterferenceMM     float64     `json:"interference_mm"`
+	RecommendedWaxLevel WaxLevel  `json:"recommended_wax_level"`
+	Nodes              int         `json:"nodes"`
+	MatrixSize         int         `json:"matrix_size"`
+	IsEstimated        bool        `json:"is_estimated"`
+	CalculatedAt       time.Time   `json:"calculated_at"`
 }

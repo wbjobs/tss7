@@ -1,5 +1,22 @@
 package models
 
+import "math"
+
+type WaxLevel string
+
+const (
+	WaxLevelNone   WaxLevel = "无"
+	WaxLevelLight  WaxLevel = "轻度"
+	WaxLevelMedium WaxLevel = "中度"
+	WaxLevelHeavy  WaxLevel = "重度"
+)
+
+type HumidityEffect struct {
+	ExpansionCoeffPerRH float64
+	EquilibriumRH       float64
+	MaxSwellingRatio    float64
+}
+
 type WoodMaterial struct {
 	Name              string
 	ElasticModulusGPa float64
@@ -9,6 +26,7 @@ type WoodMaterial struct {
 	TensileStrengthPa float64
 	CompressiveStrPa  float64
 	ShearStrengthPa   float64
+	HumidityEffect    HumidityEffect
 }
 
 type JointType struct {
@@ -30,6 +48,11 @@ var WoodMaterials = map[string]WoodMaterial{
 		TensileStrengthPa: 80e6,
 		CompressiveStrPa:  60e6,
 		ShearStrengthPa:   12e6,
+		HumidityEffect: HumidityEffect{
+			ExpansionCoeffPerRH: 0.00015,
+			EquilibriumRH:       50.0,
+			MaxSwellingRatio:    0.08,
+		},
 	},
 	"胡桃木": {
 		Name:              "胡桃木",
@@ -40,6 +63,11 @@ var WoodMaterials = map[string]WoodMaterial{
 		TensileStrengthPa: 68e6,
 		CompressiveStrPa:  52e6,
 		ShearStrengthPa:   10e6,
+		HumidityEffect: HumidityEffect{
+			ExpansionCoeffPerRH: 0.00012,
+			EquilibriumRH:       48.0,
+			MaxSwellingRatio:    0.065,
+		},
 	},
 	"樱桃木": {
 		Name:              "樱桃木",
@@ -50,6 +78,11 @@ var WoodMaterials = map[string]WoodMaterial{
 		TensileStrengthPa: 65e6,
 		CompressiveStrPa:  50e6,
 		ShearStrengthPa:   9.5e6,
+		HumidityEffect: HumidityEffect{
+			ExpansionCoeffPerRH: 0.00018,
+			EquilibriumRH:       52.0,
+			MaxSwellingRatio:    0.09,
+		},
 	},
 	"红木": {
 		Name:              "红木",
@@ -60,6 +93,11 @@ var WoodMaterials = map[string]WoodMaterial{
 		TensileStrengthPa: 90e6,
 		CompressiveStrPa:  70e6,
 		ShearStrengthPa:   14e6,
+		HumidityEffect: HumidityEffect{
+			ExpansionCoeffPerRH: 0.00009,
+			EquilibriumRH:       45.0,
+			MaxSwellingRatio:    0.045,
+		},
 	},
 	"松木": {
 		Name:              "松木",
@@ -70,6 +108,11 @@ var WoodMaterials = map[string]WoodMaterial{
 		TensileStrengthPa: 55e6,
 		CompressiveStrPa:  40e6,
 		ShearStrengthPa:   7.5e6,
+		HumidityEffect: HumidityEffect{
+			ExpansionCoeffPerRH: 0.00025,
+			EquilibriumRH:       55.0,
+			MaxSwellingRatio:    0.12,
+		},
 	},
 }
 
@@ -140,4 +183,53 @@ func ListJointTypes() []string {
 		names = append(names, k)
 	}
 	return names
+}
+
+func CalculateSwellingRatio(wood WoodMaterial, humidityRH float64) float64 {
+	rhDiff := humidityRH - wood.HumidityEffect.EquilibriumRH
+	rawSwelling := rhDiff * wood.HumidityEffect.ExpansionCoeffPerRH * 100.0
+
+	sign := 1.0
+	if rawSwelling < 0 {
+		sign = -1
+	}
+	absSwelling := math.Abs(rawSwelling)
+	if absSwelling > wood.HumidityEffect.MaxSwellingRatio {
+		absSwelling = wood.HumidityEffect.MaxSwellingRatio
+	}
+
+	return sign * absSwelling
+}
+
+func CalculateInterference(swellingRatio float64, baseTenonWidthMM float64) float64 {
+	return baseTenonWidthMM * swellingRatio
+}
+
+func GetRecommendedWaxLevel(humidityRH float64, swellingRatio float64, wood WoodMaterial) WaxLevel {
+	rhDiff := math.Abs(humidityRH - wood.HumidityEffect.EquilibriumRH)
+	absSwelling := math.Abs(swellingRatio)
+
+	if rhDiff < 10 && absSwelling < 0.01 {
+		return WaxLevelNone
+	} else if rhDiff < 20 && absSwelling < 0.025 {
+		return WaxLevelLight
+	} else if rhDiff < 35 && absSwelling < 0.05 {
+		return WaxLevelMedium
+	} else {
+		return WaxLevelHeavy
+	}
+}
+
+func IsValidHumidity(humidityRH float64) bool {
+	return humidityRH >= 30.0 && humidityRH <= 90.0
+}
+
+func ClampHumidity(humidityRH float64) float64 {
+	if humidityRH < 30.0 {
+		return 30.0
+	}
+	if humidityRH > 90.0 {
+		return 90.0
+	}
+	return humidityRH
 }

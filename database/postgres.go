@@ -56,11 +56,15 @@ func (db *Database) initSchema() error {
 		id BIGSERIAL PRIMARY KEY,
 		wood_type VARCHAR(50) NOT NULL,
 		joint_type VARCHAR(50) NOT NULL,
+		humidity_rh DOUBLE PRECISION NOT NULL DEFAULT 50.0,
 		max_load_kg DOUBLE PRECISION NOT NULL,
 		failure_mode VARCHAR(20) NOT NULL,
 		safety_factor DOUBLE PRECISION NOT NULL,
 		tensile_stress_max_pa DOUBLE PRECISION NOT NULL,
 		torsion_stress_max_pa DOUBLE PRECISION NOT NULL,
+		swelling_ratio DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+		interference_mm DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+		recommended_wax_level VARCHAR(10) NOT NULL DEFAULT '无',
 		nodes INTEGER NOT NULL,
 		matrix_size INTEGER NOT NULL,
 		is_estimated BOOLEAN NOT NULL DEFAULT FALSE,
@@ -75,10 +79,35 @@ func (db *Database) initSchema() error {
 		) THEN
 			ALTER TABLE simulation_history ADD COLUMN is_estimated BOOLEAN NOT NULL DEFAULT FALSE;
 		END IF;
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'simulation_history' AND column_name = 'humidity_rh'
+		) THEN
+			ALTER TABLE simulation_history ADD COLUMN humidity_rh DOUBLE PRECISION NOT NULL DEFAULT 50.0;
+		END IF;
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'simulation_history' AND column_name = 'swelling_ratio'
+		) THEN
+			ALTER TABLE simulation_history ADD COLUMN swelling_ratio DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+		END IF;
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'simulation_history' AND column_name = 'interference_mm'
+		) THEN
+			ALTER TABLE simulation_history ADD COLUMN interference_mm DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+		END IF;
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'simulation_history' AND column_name = 'recommended_wax_level'
+		) THEN
+			ALTER TABLE simulation_history ADD COLUMN recommended_wax_level VARCHAR(10) NOT NULL DEFAULT '无';
+		END IF;
 	END $$;
 
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_wood_type ON simulation_history(wood_type);
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_joint_type ON simulation_history(joint_type);
+	CREATE INDEX IF NOT EXISTS idx_simulation_history_humidity_rh ON simulation_history(humidity_rh);
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_calculated_at ON simulation_history(calculated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_is_estimated ON simulation_history(is_estimated);
 	`
@@ -90,9 +119,10 @@ func (db *Database) initSchema() error {
 func (db *Database) SaveSimulation(result *models.SimulationResult) (int64, error) {
 	insertSQL := `
 	INSERT INTO simulation_history (
-		wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		wood_type, joint_type, humidity_rh, max_load_kg, failure_mode, safety_factor,
+		tensile_stress_max_pa, torsion_stress_max_pa, swelling_ratio, interference_mm,
+		recommended_wax_level, nodes, matrix_size, is_estimated, calculated_at
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	RETURNING id
 	`
 
@@ -101,11 +131,15 @@ func (db *Database) SaveSimulation(result *models.SimulationResult) (int64, erro
 		insertSQL,
 		result.WoodType,
 		result.JointType,
+		result.HumidityRH,
 		result.MaxLoadKg,
 		string(result.FailureMode),
 		result.SafetyFactor,
 		result.TensileStressMax,
 		result.TorsionStressMax,
+		result.SwellingRatio,
+		result.InterferenceMM,
+		string(result.RecommendedWaxLevel),
 		result.Nodes,
 		result.MatrixSize,
 		result.IsEstimated,
@@ -125,8 +159,9 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 	}
 
 	querySQL := `
-	SELECT id, wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
+	SELECT id, wood_type, joint_type, humidity_rh, max_load_kg, failure_mode, safety_factor,
+		tensile_stress_max_pa, torsion_stress_max_pa, swelling_ratio, interference_mm,
+		recommended_wax_level, nodes, matrix_size, is_estimated, calculated_at
 	FROM simulation_history
 	ORDER BY calculated_at DESC
 	LIMIT $1
@@ -141,16 +176,20 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 	var records []models.HistoryRecord
 	for rows.Next() {
 		var r models.HistoryRecord
-		var failureMode string
+		var failureMode, waxLevel string
 		err := rows.Scan(
 			&r.ID,
 			&r.WoodType,
 			&r.JointType,
+			&r.HumidityRH,
 			&r.MaxLoadKg,
 			&failureMode,
 			&r.SafetyFactor,
 			&r.TensileStressMax,
 			&r.TorsionStressMax,
+			&r.SwellingRatio,
+			&r.InterferenceMM,
+			&waxLevel,
 			&r.Nodes,
 			&r.MatrixSize,
 			&r.IsEstimated,
@@ -160,6 +199,7 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 		r.FailureMode = models.FailureMode(failureMode)
+		r.RecommendedWaxLevel = models.WaxLevel(waxLevel)
 		records = append(records, r)
 	}
 
@@ -172,23 +212,28 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 
 func (db *Database) GetHistoryByID(id int64) (*models.HistoryRecord, error) {
 	querySQL := `
-	SELECT id, wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
+	SELECT id, wood_type, joint_type, humidity_rh, max_load_kg, failure_mode, safety_factor,
+		tensile_stress_max_pa, torsion_stress_max_pa, swelling_ratio, interference_mm,
+		recommended_wax_level, nodes, matrix_size, is_estimated, calculated_at
 	FROM simulation_history
 	WHERE id = $1
 	`
 
 	var r models.HistoryRecord
-	var failureMode string
+	var failureMode, waxLevel string
 	err := db.conn.QueryRow(querySQL, id).Scan(
 		&r.ID,
 		&r.WoodType,
 		&r.JointType,
+		&r.HumidityRH,
 		&r.MaxLoadKg,
 		&failureMode,
 		&r.SafetyFactor,
 		&r.TensileStressMax,
 		&r.TorsionStressMax,
+		&r.SwellingRatio,
+		&r.InterferenceMM,
+		&waxLevel,
 		&r.Nodes,
 		&r.MatrixSize,
 		&r.IsEstimated,
@@ -203,6 +248,7 @@ func (db *Database) GetHistoryByID(id int64) (*models.HistoryRecord, error) {
 	}
 
 	r.FailureMode = models.FailureMode(failureMode)
+	r.RecommendedWaxLevel = models.WaxLevel(waxLevel)
 	return &r, nil
 }
 

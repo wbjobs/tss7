@@ -49,17 +49,31 @@ func main() {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		fmt.Fprintf(w, `{
   "name": "古董木工榫卯结构应力模拟API",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "endpoints": {
-    "POST /api/simulate": "执行应力模拟计算",
+    "POST /api/simulate": "执行应力模拟计算（含湿度影响分析）",
     "GET  /api/materials": "获取支持的木材种类列表",
     "GET  /api/joints": "获取支持的榫卯类型列表",
     "GET  /api/history": "获取计算历史记录",
     "GET  /api/history/{id}": "获取指定历史记录详情",
     "GET  /health": "健康检查"
   },
+  "simulate_request": {
+    "wood_type": "string (必填，如橡木、胡桃木)",
+    "joint_type": "string (必填，如燕尾榫、直榫)",
+    "humidity_rh": "float64 (可选，默认50，范围30-90)"
+  },
+  "humidity_features": [
+    "湿度-木材膨胀系数映射",
+    "动态过盈量（装配紧密度）计算",
+    "预压应力边界条件",
+    "建议涂蜡等级输出",
+    "历史数据湿度字段统计"
+  ],
   "supported_woods": %s,
-  "supported_joints": %s
+  "supported_joints": %s,
+  "default_humidity_rh": 50,
+  "humidity_range": "30%% - 90%%"
 }`,
 			toJSON(models.ListWoodMaterials()),
 			toJSON(models.ListJointTypes()),

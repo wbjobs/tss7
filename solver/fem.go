@@ -17,6 +17,16 @@ type FEMesh2D struct {
 	Elements []Element2D
 }
 
+type JointRegion int
+
+const (
+	RegionMortise  JointRegion = iota
+	RegionTenon
+	RegionBoth
+)
+
+const ThicknessMM = 20.0
+
 func GenerateJointMesh(widthMM, heightMM, overlapMM float64, resolution int) *FEMesh2D {
 	mesh := &FEMesh2D{}
 
@@ -31,6 +41,69 @@ func GenerateJointMesh(widthMM, heightMM, overlapMM float64, resolution int) *FE
 			mesh.Nodes = append(mesh.Nodes, Node2D{
 				X: float64(i) * dx,
 				Y: float64(j) * dy,
+			})
+		}
+	}
+
+	for j := 0; j < nxY-1; j++ {
+		for i := 0; i < nxX-1; i++ {
+			n0 := j*nxX + i
+			n1 := j*nxX + i + 1
+			n2 := (j+1)*nxX + i + 1
+			n3 := (j+1)*nxX + i
+			mesh.Elements = append(mesh.Elements, Element2D{
+				NodeIDs: [4]int{n0, n1, n2, n3},
+			})
+		}
+	}
+
+	return mesh
+}
+
+func GenerateJointMeshWithInterference(
+	widthMM, heightMM, overlapMM, interferenceMM float64,
+	tenonWidthRatio, tenonYCenterRatio float64,
+	resolution int,
+) *FEMesh2D {
+	mesh := &FEMesh2D{}
+
+	nxX := resolution
+	nxY := resolution
+
+	tenonHeight := heightMM * tenonWidthRatio
+	tenonCenterY := heightMM * tenonYCenterRatio
+	tenonTop := tenonCenterY + tenonHeight/2.0
+	tenonBottom := tenonCenterY - tenonHeight/2.0
+
+	dx := widthMM / float64(nxX-1)
+	dy := heightMM / float64(nxY-1)
+	halfInterference := interferenceMM / 2.0
+
+	for j := 0; j < nxY; j++ {
+		for i := 0; i < nxX; i++ {
+			baseX := float64(i) * dx
+			baseY := float64(j) * dy
+			adjustedY := baseY
+
+			overlapStartX := widthMM - overlapMM
+			if baseX >= overlapStartX-1e-6 {
+				if baseY > tenonCenterY && baseY <= tenonTop {
+					adjustedY = baseY + halfInterference
+				} else if baseY < tenonCenterY && baseY >= tenonBottom {
+					adjustedY = baseY - halfInterference
+				}
+			}
+
+			if adjustedY < 0 {
+				adjustedY = 0
+			}
+			if adjustedY > heightMM {
+				adjustedY = heightMM
+			}
+
+			mesh.Nodes = append(mesh.Nodes, Node2D{
+				X: baseX,
+				Y: adjustedY,
 			})
 		}
 	}
@@ -218,4 +291,63 @@ func MaxVonMisesStress(stresses []float64) float64 {
 		}
 	}
 	return maxStress
+}
+
+func ApplyInterferencePressure(
+	mesh *FEMesh2D, F []float64,
+	widthMM, heightMM, overlapMM, interferenceMM float64,
+	tenonWidthRatio, tenonYCenterRatio float64,
+	EPa, nu float64,
+) {
+	tenonHeight := heightMM * tenonWidthRatio
+	tenonCenterY := heightMM * tenonYCenterRatio
+	tenonTop := tenonCenterY + tenonHeight/2.0
+	tenonBottom := tenonCenterY - tenonHeight/2.0
+
+	overlapStartX := widthMM - overlapMM
+	contactAreaPerNode := (heightMM / float64(Resolution)) * ThicknessMM * 1e-6
+
+	contactPressure := 0.0
+	if interferenceMM > 1e-10 {
+		contactPressure = EPa * (interferenceMM / heightMM) / (1 - nu*nu)
+	}
+
+	for i, node := range mesh.Nodes {
+		if node.X >= overlapStartX-1e-6 {
+			normalForce := contactPressure * contactAreaPerNode
+
+			if math.Abs(node.Y-tenonTop) < 2*(heightMM/float64(Resolution)) {
+				F[i*2+1] -= normalForce
+			}
+			if math.Abs(node.Y-tenonBottom) < 2*(heightMM/float64(Resolution)) {
+				F[i*2+1] += normalForce
+			}
+		}
+	}
+}
+
+func GetJointContactNodes(
+	mesh *FEMesh2D,
+	widthMM, heightMM, overlapMM float64,
+	tenonWidthRatio, tenonYCenterRatio float64,
+) []int {
+	var contactNodes []int
+
+	tenonHeight := heightMM * tenonWidthRatio
+	tenonCenterY := heightMM * tenonYCenterRatio
+	tenonTop := tenonCenterY + tenonHeight/2.0
+	tenonBottom := tenonCenterY - tenonHeight/2.0
+
+	overlapStartX := widthMM - overlapMM
+	threshold := 2 * (heightMM / float64(Resolution))
+
+	for i, node := range mesh.Nodes {
+		if node.X >= overlapStartX-1e-6 {
+			if math.Abs(node.Y-tenonTop) < threshold || math.Abs(node.Y-tenonBottom) < threshold {
+				contactNodes = append(contactNodes, i)
+			}
+		}
+	}
+
+	return contactNodes
 }

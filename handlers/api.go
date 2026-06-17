@@ -55,6 +55,16 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.HumidityRH < 1e-6 {
+		req.HumidityRH = 50.0
+	}
+
+	if !models.IsValidHumidity(req.HumidityRH) {
+		writeError(w, http.StatusBadRequest,
+			"湿度参数必须在30%-90%之间，当前值: "+strconv.FormatFloat(req.HumidityRH, 'f', 1, 64)+"%")
+		return
+	}
+
 	wood, ok := models.GetWoodMaterial(req.WoodType)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "不支持的木材种类: "+req.WoodType+"。可用类型: "+strings.Join(models.ListWoodMaterials(), ", "))
@@ -69,12 +79,13 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 
 	sim := simulation.NewJointSimulator(wood, joint)
 	sim.SetTimeout(2 * time.Second)
+	sim.SetHumidity(req.HumidityRH)
 
 	ctx := r.Context()
 	result, err := sim.SimulateWithContext(ctx)
 	if err != nil {
-		log.Printf("ERROR: 模拟失败 木材=%s 榫卯=%s 错误=%v 耗时=%s",
-			req.WoodType, req.JointType, err, time.Since(startTime))
+		log.Printf("ERROR: 模拟失败 木材=%s 榫卯=%s 湿度=%.1f%% 错误=%v 耗时=%s",
+			req.WoodType, req.JointType, req.HumidityRH, err, time.Since(startTime))
 		writeError(w, http.StatusInternalServerError, "模拟计算失败: "+err.Error())
 		return
 	}
@@ -83,6 +94,8 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 	var statusMsg string
 	if elapsed > 1800*time.Millisecond {
 		statusMsg = "模拟计算完成(接近超时阈值)"
+	} else if result.IsEstimated {
+		statusMsg = "模拟计算完成(使用估算值)"
 	} else {
 		statusMsg = "模拟计算完成"
 	}
@@ -92,15 +105,16 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			result.ID = id
 		} else {
-			log.Printf("WARN: 保存数据库失败 木材=%s 榫卯=%s 错误=%v",
-				req.WoodType, req.JointType, err)
+			log.Printf("WARN: 保存数据库失败 木材=%s 榫卯=%s 湿度=%.1f%% 错误=%v",
+				req.WoodType, req.JointType, req.HumidityRH, err)
 		}
 	}
 
-	log.Printf("INFO: 模拟完成 木材=%s 榫卯=%s 最大承重=%.2fkg 失效模式=%s 安全系数=%.2f 耗时=%s",
-		req.WoodType, req.JointType, result.MaxLoadKg,
-		result.FailureMode, result.SafetyFactor, elapsed)
+	log.Printf("INFO: 模拟完成 木材=%s 榫卯=%s 湿度=%.1f%% 最大承重=%.2fkg 失效模式=%s 安全系数=%.2f 蜡等级=%s 耗时=%s",
+		req.WoodType, req.JointType, req.HumidityRH, result.MaxLoadKg,
+		result.FailureMode, result.SafetyFactor, result.RecommendedWaxLevel, elapsed)
 
+	swellingPct := result.SwellingRatio * 100.0
 	writeJSON(w, http.StatusOK, models.APIResponse{
 		Success: true,
 		Message: statusMsg,
@@ -110,13 +124,41 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 			"available_joints":    models.ListJointTypes(),
 			"material_properties": wood,
 			"joint_parameters":    joint,
+			"humidity_analysis": map[string]interface{}{
+				"input_humidity_rh":   req.HumidityRH,
+				"equilibrium_humidity": wood.HumidityEffect.EquilibriumRH,
+				"humidity_diff_pct":    req.HumidityRH - wood.HumidityEffect.EquilibriumRH,
+				"swelling_ratio_pct":   swellingPct,
+				"interference_mm":      result.InterferenceMM,
+				"expansion_coeff_per_rh": wood.HumidityEffect.ExpansionCoeffPerRH,
+			},
+			"wax_recommendation": map[string]interface{}{
+				"level":       result.RecommendedWaxLevel,
+				"description": getWaxDescription(result.RecommendedWaxLevel),
+			},
 			"performance": map[string]interface{}{
-				"elapsed_ms": elapsed.Milliseconds(),
-				"timeout_ms": 2000,
+				"elapsed_ms":   elapsed.Milliseconds(),
+				"timeout_ms":   2000,
 				"near_timeout": elapsed > 1800*time.Millisecond,
+				"is_estimated": result.IsEstimated,
 			},
 		},
 	})
+}
+
+func getWaxDescription(level models.WaxLevel) string {
+	switch level {
+	case models.WaxLevelNone:
+		return "当前湿度环境适宜，无需特殊涂蜡保护"
+	case models.WaxLevelLight:
+		return "建议轻度涂蜡，使用蜂蜡或木蜡油，每6个月维护一次"
+	case models.WaxLevelMedium:
+		return "建议中度涂蜡，使用硬质木蜡油，每3个月维护一次"
+	case models.WaxLevelHeavy:
+		return "建议重度涂蜡，使用环氧树脂或专业木器漆，每月检查维护"
+	default:
+		return "无"
+	}
 }
 
 func (h *APIHandler) ListMaterials(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +178,11 @@ func (h *APIHandler) ListMaterials(w http.ResponseWriter, r *http.Request) {
 			"tensile_strength_pa": mat.TensileStrengthPa,
 			"compressive_str_pa":  mat.CompressiveStrPa,
 			"shear_strength_pa":   mat.ShearStrengthPa,
+			"humidity_effect": map[string]interface{}{
+				"expansion_coeff_per_rh": mat.HumidityEffect.ExpansionCoeffPerRH,
+				"equilibrium_rh":         mat.HumidityEffect.EquilibriumRH,
+				"max_swelling_ratio":     mat.HumidityEffect.MaxSwellingRatio,
+			},
 		})
 	}
 
@@ -249,18 +296,22 @@ func (h *APIHandler) GetHistoryByID(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		Message: "记录详情",
 		Data: &models.SimulationResult{
-			ID:               record.ID,
-			WoodType:         record.WoodType,
-			JointType:        record.JointType,
-			MaxLoadKg:        record.MaxLoadKg,
-			FailureMode:      record.FailureMode,
-			SafetyFactor:     record.SafetyFactor,
-			TensileStressMax: record.TensileStressMax,
-			TorsionStressMax: record.TorsionStressMax,
-			Nodes:            record.Nodes,
-			MatrixSize:       record.MatrixSize,
-			IsEstimated:      record.IsEstimated,
-			CalculatedAt:     record.CalculatedAt,
+			ID:                   record.ID,
+			WoodType:             record.WoodType,
+			JointType:            record.JointType,
+			HumidityRH:           record.HumidityRH,
+			MaxLoadKg:            record.MaxLoadKg,
+			FailureMode:          record.FailureMode,
+			SafetyFactor:         record.SafetyFactor,
+			TensileStressMax:     record.TensileStressMax,
+			TorsionStressMax:     record.TorsionStressMax,
+			SwellingRatio:        record.SwellingRatio,
+			InterferenceMM:       record.InterferenceMM,
+			RecommendedWaxLevel:  record.RecommendedWaxLevel,
+			Nodes:                record.Nodes,
+			MatrixSize:           record.MatrixSize,
+			IsEstimated:          record.IsEstimated,
+			CalculatedAt:         record.CalculatedAt,
 		},
 	})
 }
