@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"mortise-tenon-api/database"
 	"mortise-tenon-api/models"
 	"mortise-tenon-api/simulation"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type APIHandler struct {
@@ -37,6 +39,8 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	startTime := time.Now()
+
 	var req models.SimulationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "无效的请求体格式: "+err.Error())
@@ -64,28 +68,53 @@ func (h *APIHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sim := simulation.NewJointSimulator(wood, joint)
-	result, err := sim.Simulate()
+	sim.SetTimeout(2 * time.Second)
+
+	ctx := r.Context()
+	result, err := sim.SimulateWithContext(ctx)
 	if err != nil {
+		log.Printf("ERROR: 模拟失败 木材=%s 榫卯=%s 错误=%v 耗时=%s",
+			req.WoodType, req.JointType, err, time.Since(startTime))
 		writeError(w, http.StatusInternalServerError, "模拟计算失败: "+err.Error())
 		return
+	}
+
+	elapsed := time.Since(startTime)
+	var statusMsg string
+	if elapsed > 1800*time.Millisecond {
+		statusMsg = "模拟计算完成(接近超时阈值)"
+	} else {
+		statusMsg = "模拟计算完成"
 	}
 
 	if h.db != nil {
 		id, err := h.db.SaveSimulation(result)
 		if err == nil {
 			result.ID = id
+		} else {
+			log.Printf("WARN: 保存数据库失败 木材=%s 榫卯=%s 错误=%v",
+				req.WoodType, req.JointType, err)
 		}
 	}
 
+	log.Printf("INFO: 模拟完成 木材=%s 榫卯=%s 最大承重=%.2fkg 失效模式=%s 安全系数=%.2f 耗时=%s",
+		req.WoodType, req.JointType, result.MaxLoadKg,
+		result.FailureMode, result.SafetyFactor, elapsed)
+
 	writeJSON(w, http.StatusOK, models.APIResponse{
 		Success: true,
-		Message: "模拟计算完成",
+		Message: statusMsg,
 		Data:    result,
 		Metadata: map[string]interface{}{
 			"available_woods":     models.ListWoodMaterials(),
 			"available_joints":    models.ListJointTypes(),
 			"material_properties": wood,
 			"joint_parameters":    joint,
+			"performance": map[string]interface{}{
+				"elapsed_ms": elapsed.Milliseconds(),
+				"timeout_ms": 2000,
+				"near_timeout": elapsed > 1800*time.Millisecond,
+			},
 		},
 	})
 }
@@ -230,6 +259,7 @@ func (h *APIHandler) GetHistoryByID(w http.ResponseWriter, r *http.Request) {
 			TorsionStressMax: record.TorsionStressMax,
 			Nodes:            record.Nodes,
 			MatrixSize:       record.MatrixSize,
+			IsEstimated:      record.IsEstimated,
 			CalculatedAt:     record.CalculatedAt,
 		},
 	})

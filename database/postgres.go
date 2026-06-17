@@ -63,12 +63,24 @@ func (db *Database) initSchema() error {
 		torsion_stress_max_pa DOUBLE PRECISION NOT NULL,
 		nodes INTEGER NOT NULL,
 		matrix_size INTEGER NOT NULL,
+		is_estimated BOOLEAN NOT NULL DEFAULT FALSE,
 		calculated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
+
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'simulation_history' AND column_name = 'is_estimated'
+		) THEN
+			ALTER TABLE simulation_history ADD COLUMN is_estimated BOOLEAN NOT NULL DEFAULT FALSE;
+		END IF;
+	END $$;
 
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_wood_type ON simulation_history(wood_type);
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_joint_type ON simulation_history(joint_type);
 	CREATE INDEX IF NOT EXISTS idx_simulation_history_calculated_at ON simulation_history(calculated_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_simulation_history_is_estimated ON simulation_history(is_estimated);
 	`
 
 	_, err := db.conn.Exec(createTableSQL)
@@ -79,8 +91,8 @@ func (db *Database) SaveSimulation(result *models.SimulationResult) (int64, erro
 	insertSQL := `
 	INSERT INTO simulation_history (
 		wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, calculated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	RETURNING id
 	`
 
@@ -96,6 +108,7 @@ func (db *Database) SaveSimulation(result *models.SimulationResult) (int64, erro
 		result.TorsionStressMax,
 		result.Nodes,
 		result.MatrixSize,
+		result.IsEstimated,
 		result.CalculatedAt,
 	).Scan(&id)
 
@@ -113,7 +126,7 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 
 	querySQL := `
 	SELECT id, wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, calculated_at
+		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
 	FROM simulation_history
 	ORDER BY calculated_at DESC
 	LIMIT $1
@@ -140,6 +153,7 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 			&r.TorsionStressMax,
 			&r.Nodes,
 			&r.MatrixSize,
+			&r.IsEstimated,
 			&r.CalculatedAt,
 		)
 		if err != nil {
@@ -159,7 +173,7 @@ func (db *Database) GetHistory(limit int) ([]models.HistoryRecord, error) {
 func (db *Database) GetHistoryByID(id int64) (*models.HistoryRecord, error) {
 	querySQL := `
 	SELECT id, wood_type, joint_type, max_load_kg, failure_mode, safety_factor,
-		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, calculated_at
+		tensile_stress_max_pa, torsion_stress_max_pa, nodes, matrix_size, is_estimated, calculated_at
 	FROM simulation_history
 	WHERE id = $1
 	`
@@ -177,6 +191,7 @@ func (db *Database) GetHistoryByID(id int64) (*models.HistoryRecord, error) {
 		&r.TorsionStressMax,
 		&r.Nodes,
 		&r.MatrixSize,
+		&r.IsEstimated,
 		&r.CalculatedAt,
 	)
 

@@ -3,6 +3,7 @@ package solver
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 type SparseMatrix struct {
@@ -153,6 +154,74 @@ func (m *SparseMatrix) NNZ() int {
 	return len(m.Values)
 }
 
+func (m *SparseMatrix) Diagonal() []float64 {
+	diag := make([]float64, m.Rows)
+	for row := 0; row < m.Rows; row++ {
+		start := m.RowPtr[row]
+		end := m.RowPtr[row+1]
+		for i := start; i < end; i++ {
+			if m.ColIdx[i] == row {
+				diag[row] = m.Values[i]
+				break
+			}
+		}
+	}
+	return diag
+}
+
+func (m *SparseMatrix) AddRegularization(epsilon float64) {
+	avgDiag := 0.0
+	diag := m.Diagonal()
+	count := 0
+	for _, d := range diag {
+		if math.Abs(d) > 1e-15 {
+			avgDiag += math.Abs(d)
+			count++
+		}
+	}
+	if count > 0 {
+		avgDiag /= float64(count)
+	}
+	shift := avgDiag * epsilon
+	if shift < 1e-10 {
+		shift = epsilon
+	}
+	for row := 0; row < m.Rows; row++ {
+		found := false
+		start := m.RowPtr[row]
+		end := m.RowPtr[row+1]
+		for i := start; i < end; i++ {
+			if m.ColIdx[i] == row {
+				m.Values[i] += shift
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.Set(row, row, shift)
+		}
+	}
+}
+
+func (m *SparseMatrix) ConditionNumberEstimate() float64 {
+	diag := m.Diagonal()
+	maxDiag := 0.0
+	minDiag := math.Inf(1)
+	for _, d := range diag {
+		absD := math.Abs(d)
+		if absD > maxDiag {
+			maxDiag = absD
+		}
+		if absD > 1e-15 && absD < minDiag {
+			minDiag = absD
+		}
+	}
+	if minDiag == math.Inf(1) || minDiag < 1e-15 {
+		return math.Inf(1)
+	}
+	return maxDiag / minDiag
+}
+
 func VectorDot(a, b []float64) float64 {
 	if len(a) != len(b) {
 		panic("vector sizes don't match for dot product")
@@ -241,6 +310,10 @@ func ConjugateGradient(A *SparseMatrix, b []float64, tol float64, maxIter int) (
 }
 
 func JacobiSolver(A *SparseMatrix, b []float64, tol float64, maxIter int) ([]float64, int, error) {
+	return JacobiSolverWithCancel(A, b, tol, maxIter, nil)
+}
+
+func JacobiSolverWithCancel(A *SparseMatrix, b []float64, tol float64, maxIter int, cancel <-chan struct{}) ([]float64, int, error) {
 	n := len(b)
 	if A.Rows != n || A.Cols != n {
 		return nil, 0, fmt.Errorf("matrix size mismatch")
@@ -250,6 +323,12 @@ func JacobiSolver(A *SparseMatrix, b []float64, tol float64, maxIter int) ([]flo
 	xNew := make([]float64, n)
 
 	for iter := 0; iter < maxIter; iter++ {
+		select {
+		case <-cancel:
+			return x, iter, fmt.Errorf("solver cancelled")
+		default:
+		}
+
 		for i := 0; i < n; i++ {
 			sum := 0.0
 			aDiag := 0.0
@@ -285,4 +364,118 @@ func JacobiSolver(A *SparseMatrix, b []float64, tol float64, maxIter int) ([]flo
 	}
 
 	return x, maxIter, fmt.Errorf("Jacobi did not converge in %d iterations", maxIter)
+}
+
+func PreconditionedConjugateGradient(A *SparseMatrix, b []float64, tol float64, maxIter int) ([]float64, int, error) {
+	return PreconditionedConjugateGradientWithCancel(A, b, tol, maxIter, nil)
+}
+
+func PreconditionedConjugateGradientWithCancel(A *SparseMatrix, b []float64, tol float64, maxIter int, cancel <-chan struct{}) ([]float64, int, error) {
+	n := len(b)
+	if A.Rows != n || A.Cols != n {
+		return nil, 0, fmt.Errorf("matrix size mismatch")
+	}
+
+	diag := A.Diagonal()
+	M := make([]float64, n)
+	for i := 0; i < n; i++ {
+		if math.Abs(diag[i]) > 1e-15 {
+			M[i] = 1.0 / diag[i]
+		} else {
+			M[i] = 1.0
+		}
+	}
+
+	x := make([]float64, n)
+	r := VectorSub(b, A.MultiplyVector(x))
+
+	z := make([]float64, n)
+	for i := 0; i < n; i++ {
+		z[i] = r[i] * M[i]
+	}
+
+	p := make([]float64, n)
+	copy(p, z)
+
+	rsOld := VectorDot(r, z)
+
+	if math.Sqrt(rsOld) < tol {
+		return x, 0, nil
+	}
+
+	for iter := 0; iter < maxIter; iter++ {
+		select {
+		case <-cancel:
+			return x, iter, fmt.Errorf("solver cancelled")
+		default:
+		}
+
+		Ap := A.MultiplyVector(p)
+		pAp := VectorDot(p, Ap)
+
+		if math.Abs(pAp) < 1e-15 {
+			return x, iter, fmt.Errorf("breakdown in PCG: p'Ap ~ 0")
+		}
+
+		alpha := rsOld / pAp
+		x = VectorAdd(x, VectorScale(p, alpha))
+		r = VectorSub(r, VectorScale(Ap, alpha))
+
+		rsNewMag := VectorNorm(r)
+		if rsNewMag < tol {
+			return x, iter + 1, nil
+		}
+
+		for i := 0; i < n; i++ {
+			z[i] = r[i] * M[i]
+		}
+
+		rsNew := VectorDot(r, z)
+		beta := rsNew / rsOld
+		p = VectorAdd(z, VectorScale(p, beta))
+		rsOld = rsNew
+	}
+
+	return x, maxIter, fmt.Errorf("PCG did not converge in %d iterations", maxIter)
+}
+
+func SolveWithTimeout(A *SparseMatrix, b []float64, tol float64, maxIter int, timeout time.Duration) ([]float64, int, error) {
+	cancel := make(chan struct{})
+	done := make(chan struct{})
+
+	var result []float64
+	var iters int
+	var err error
+
+	go func() {
+		defer close(done)
+		condNum := A.ConditionNumberEstimate()
+		if condNum > 1e10 || math.IsInf(condNum, 1) {
+			regA := copySparseMatrixInternal(A)
+			regA.AddRegularization(1e-8)
+			result, iters, err = PreconditionedConjugateGradientWithCancel(regA, b, tol, maxIter, cancel)
+		} else {
+			result, iters, err = PreconditionedConjugateGradientWithCancel(A, b, tol, maxIter, cancel)
+		}
+	}()
+
+	select {
+	case <-done:
+		return result, iters, err
+	case <-time.After(timeout):
+		close(cancel)
+		<-done
+		return nil, 0, fmt.Errorf("solver timeout after %v", timeout)
+	}
+}
+
+func copySparseMatrixInternal(m *SparseMatrix) *SparseMatrix {
+	cp := NewSparseMatrix(m.Rows, m.Cols)
+	cp.Values = make([]float64, len(m.Values))
+	cp.ColIdx = make([]int, len(m.ColIdx))
+	cp.RowPtr = make([]int, len(m.RowPtr))
+	copy(cp.Values, m.Values)
+	copy(cp.ColIdx, m.ColIdx)
+	copy(cp.RowPtr, m.RowPtr)
+	return cp
 }

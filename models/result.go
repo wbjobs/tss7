@@ -21,6 +21,7 @@ type SimulationResult struct {
 	TorsionStressMax float64     `json:"torsion_stress_max_pa"`
 	Nodes            int         `json:"nodes"`
 	MatrixSize       int         `json:"matrix_size"`
+	IsEstimated      bool        `json:"is_estimated"`
 	CalculatedAt     time.Time   `json:"calculated_at"`
 }
 
@@ -47,5 +48,6 @@ type HistoryRecord struct {
 	TorsionStressMax float64     `json:"torsion_stress_max_pa"`
 	Nodes            int         `json:"nodes"`
 	MatrixSize       int         `json:"matrix_size"`
+	IsEstimated      bool        `json:"is_estimated"`
 	CalculatedAt     time.Time   `json:"calculated_at"`
 }
